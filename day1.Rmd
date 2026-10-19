@@ -1,0 +1,335 @@
+---
+title: "Day 1: Cell Ranger, Integration, and Annotation"
+author: "Dominic J. Acri, PhD"
+output:
+  html_document:
+    toc: true
+---
+
+Open `BDMS_sc_2026_student.Rproj` first. All paths start in the course folder, wherever you put it. Run the chunks in order; knitting reruns the day's analysis. Use the Rmd or the matching scripts.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width = 10, fig.height = 6)
+```
+
+## Before starting
+
+Use the course RStudio session on Biowulf (100 GB RAM, as in the slides). Run `scripts/0_setup.R` once in the R console before class to install the packages.
+
+## Part 1: Cell Ranger
+
+Run this in the RStudio **Terminal**, starting in the course folder. It writes a new `cellranger_run`; the supplied `cellranger_backup` stays available.
+
+```{bash cellranger, eval=FALSE}
+bash scripts/0_cellranger/1_cellranger.sh
+```
+
+Open `results/day1/cellranger_run/outs/web_summary.html` when the run finishes. While it runs, use `results/day1/cellranger_backup/outs/web_summary.html` and inspect the supplied `outs` folder. The mouse analyses below use the supplied matrices, independently of this human PBMC demo.
+
+## Part 2: Cell Ranger outputs to clusters
+
+Matching script: `scripts/01_qc.R`.
+
+### Load packages and checkpoint
+
+```{r qc_1}
+# Part 2: import the five precomputed 10x filtered matrices and QC.
+# Run: Rscript scripts/01_qc.R
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(qs2)
+
+project_dir <- "."
+data_dir <- file.path(project_dir, "data")
+output_dir <- file.path(project_dir, "results/day1")
+plot_dir <- file.path(project_dir, "plots/day1")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+### The simplest import
+
+Read one filtered matrix, create a Seurat object, and inspect QC.
+
+```{r qc_2}
+####################
+#the simplest load in possible
+####################
+test <- Seurat::Read10X(data.dir  = "./data/10x_mouse/filtered_feature_bc_matrix/")
+test
+obj_test <- CreateSeuratObject(test,assay = "RNA",project = "test_demo",min.cells = 3,min.features = 0)
+obj_test
+obj_test[["percent.mt"]] <- Seurat::PercentageFeatureSet(
+  obj_test, pattern = "^mt-"
+)
+colnames(obj_test@meta.data)
+VlnPlot(obj_test,features = c("nCount_RNA","nFeature_RNA","percent.mt"))
+```
+
+### Import the five samples
+
+Use a sample table and loop to repeat the same steps.
+
+```{r qc_3}
+####################
+#let's do a little more reproducibly
+####################
+# "Reference" means non-5xFAD source material, not a matched WT control.
+samples <- tibble::tibble(
+  sample_id = c("10x_mouse", "GSM8824189_S_1", "GSM8824190_S_2",
+                "A1331_Idol-Camk2a-WT-5xFAD", "A2022_Idol-Camk2a-WT-5xFAD"),
+  study = c("10x_mouse", "Kersey_2026", "Kersey_2026",
+            "Karahan_2025", "Karahan_2025"),
+  condition = c("reference", "reference", "reference", "5xFAD", "5xFAD"),
+  archive = c(
+    file.path(data_dir, "10x_mouse/5k_mouse_brain_CNIK_3pv3_filtered_feature_bc_matrix.tar.gz"),
+    file.path(data_dir, "Kersey_2026/GSM8824189_S_1_filtered_feature_bc_matrix.tar.gz"),
+    file.path(data_dir, "Kersey_2026/GSM8824190_S_2_filtered_feature_bc_matrix.tar.gz"),
+    file.path(data_dir, "Karahan_2025/A1331_Idol-Camk2a-WT-5xFAD_filtered_feature_bc_matrix.tar.gz"),
+    file.path(data_dir, "Karahan_2025/A2022_Idol-Camk2a-WT-5xFAD_filtered_feature_bc_matrix.tar.gz")
+  )
+)
+
+
+seurat_samples <- vector("list", nrow(samples))
+names(seurat_samples) <- samples$sample_id
+
+for (i in seq_len(nrow(samples))) {
+  sample_id <- samples$sample_id[i]
+  unpack_dir <- file.path(data_dir, "unpacked", sample_id)
+  dir.create(unpack_dir, recursive = TRUE, showWarnings = FALSE)
+
+  utils::untar(samples$archive[i], exdir = unpack_dir)
+  matrix_files <- list.files(unpack_dir, pattern = "^matrix[.]mtx([.]gz)?$",
+                             recursive = TRUE, full.names = TRUE)
+  counts <- Seurat::Read10X(data.dir = dirname(matrix_files))
+
+  seurat_samples[[i]] <- Seurat::CreateSeuratObject(
+    counts = counts, project = sample_id, min.cells = 3, min.features = 0
+  )
+  seurat_samples[[i]]$sample_id <- sample_id
+  seurat_samples[[i]]$study <- samples$study[i]
+  seurat_samples[[i]]$condition <- samples$condition[i]
+  seurat_samples[[i]][["percent.mt"]] <- Seurat::PercentageFeatureSet(
+    seurat_samples[[i]], pattern = "^mt-"
+  )
+  message(sample_id, ": ", ncol(seurat_samples[[i]]), " nuclei before QC")
+}
+```
+
+### Inspect QC
+
+Compare genes per nucleus across samples before filtering.
+
+```{r qc_4}
+raw_qc <- dplyr::bind_rows(lapply(seq_along(seurat_samples), function(i) {
+  seurat_samples[[i]]@meta.data |>
+    dplyr::mutate(sample_id = samples$sample_id[i]) |>
+    dplyr::select(sample_id, nCount_RNA, nFeature_RNA, percent.mt)
+}))
+# utils::write.csv(raw_qc, file.path(output_dir, "01_nucleus_qc_before_filter.csv"), row.names = FALSE)
+
+qc_plot <- ggplot2::ggplot(raw_qc, ggplot2::aes(x = sample_id, y = nFeature_RNA)) +
+  ggplot2::geom_violin(fill = "#81b7be", scale = "width") +
+  ggplot2::coord_flip() +
+  ggplot2::labs(x = NULL, y = "Genes per nucleus", title = "Inspect QC by sample") +
+  ggplot2::theme_classic()
+# grDevices::png(file.path(plot_dir, "01_genes_per_nucleus.png"),
+#                width = 9, height = 5, units = "in", res = 160)
+print(qc_plot)
+# grDevices::dev.off()
+```
+
+### Filter and merge
+
+Apply the teaching thresholds, count the remaining cells, and merge the samples.
+
+```{r qc_5}
+for (i in seq_along(seurat_samples)) {
+  # Teaching thresholds; inspect sample-specific QC before keeping them.
+  keep_cells <- colnames(seurat_samples[[i]])[
+    seurat_samples[[i]]$nFeature_RNA >= 200 &
+      seurat_samples[[i]]$percent.mt <= 5
+  ]
+  seurat_samples[[i]] <- base::subset(seurat_samples[[i]], cells = keep_cells)
+}
+
+cell_counts <- tibble::tibble(
+  sample_id = samples$sample_id,
+  study = samples$study,
+  condition = samples$condition,
+  n_cells_after_qc = vapply(seurat_samples, ncol, numeric(1))
+)
+# utils::write.csv(cell_counts, file.path(output_dir, "01_sample_summary.csv"), row.names = FALSE)
+print(cell_counts)
+
+obj <- base::merge(seurat_samples[[1]], y = seurat_samples[-1],
+                   add.cell.ids = samples$sample_id, project = "BDMS_sc_2026")
+DefaultAssay(obj) <- "RNA"
+# Tip: qs2 is much quicker for saving/loading these objects: https://github.com/qsbase/qs2
+qs_save(obj, file.path(output_dir, "01_merged.qs2"))
+
+# Loading back in at the start of the next script:
+# obj <- qs_read("results/day1/01_merged.qs2")
+```
+
+## Part 2: Integration and markers
+
+Matching script: `scripts/02_integrate.R`. This reads `01_merged.qs2` and saves `02_integrated.qs2`.
+
+### Load packages and checkpoint
+
+```{r integration_1}
+# Part 2: integrate study batches and inspect markers.
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(qs2)
+library(patchwork)
+
+project_dir <- "."
+result_dir <- file.path(project_dir, "results/day1")
+plot_dir <- file.path(project_dir, "plots/day1")
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+obj <- qs_read(file.path(result_dir, "01_merged.qs2"))
+DefaultAssay(obj) <- "RNA"
+```
+
+### Before integration
+
+Normalize, select variable features, scale, and run PCA and UMAP.
+
+```{r integration_2}
+# The import/merge may already have created one counts layer per sample.
+obj[["RNA"]] <- SeuratObject::JoinLayers(obj[["RNA"]])#purposefully put together
+obj[["RNA"]] <- split(obj[["RNA"]], f = obj$study) #or split back out
+obj <- Seurat::NormalizeData(obj)
+obj <- Seurat::FindVariableFeatures(obj, nfeatures = 2000)
+obj <- Seurat::ScaleData(obj)
+obj <- Seurat::RunPCA(obj, npcs = 30)
+obj <- Seurat::RunUMAP(obj, reduction = "pca", dims = 1:20,
+                       reduction.name = "umap.unintegrated")
+#let's take a short look
+DimPlot(obj,reduction = "umap.unintegrated",group.by = "study")
+#what if we blew through this stop sign...
+obj <- Seurat::FindNeighbors(obj, reduction = "pca", dims = 1:20)
+obj <- Seurat::FindClusters(obj,resolution = 2)
+DimPlot(obj,reduction = "umap.unintegrated",group.by = "seurat_clusters",label = T)+NoLegend()
+```
+
+### Harmony integration
+
+Explicitly handle the sample and study batches.
+
+```{r integration_3}
+#so what would happen if we then explictly deal with the batches (studies)
+obj[["RNA"]] <- JoinLayers(obj[["RNA"]])
+obj <- NormalizeData(obj)
+obj <- FindVariableFeatures(obj, nfeatures = 2000)
+obj <- ScaleData(obj, vars.to.regress = c("percent.mt"))#regressing something like percent.mt will stop the percent.mt from driving clustering
+obj <- RunPCA(obj)
+library(harmony)
+obj <- RunHarmony(object = obj, reduction = "pca", group.by.vars = c("orig.ident","study"),
+                         reduction.save = 'harmony', plot_convergence = T, lambda = NULL)
+print(ElbowPlot(obj, reduction = "harmony", ndims = 50))
+
+n_dims <- 10
+obj <- FindNeighbors(obj, reduction = "harmony", dims = 1:n_dims)
+obj <- RunUMAP(obj, reduction = "harmony", dims = 1:n_dims, reduction.name = "umap_harmony")
+
+DimPlot(obj,reduction = "umap_harmony",split.by = "study",group.by = "study")
+```
+
+### Compare resolutions
+
+Compare cluster resolutions on the same integrated map.
+
+```{r integration_4}
+obj<-FindClusters(obj,resolution = c(0.1,0.5,1.0))
+
+
+p1<-DimPlot(obj,reduction = "umap_harmony",group.by = "RNA_snn_res.0.1",label = T)+NoLegend()
+p2<-DimPlot(obj,reduction = "umap_harmony",group.by = "RNA_snn_res.0.5",label = T)+NoLegend()
+p3<-DimPlot(obj,reduction = "umap_harmony",group.by = "RNA_snn_res.1",label = T)+NoLegend()
+
+p1|p2|p3
+
+
+obj$RNA_snn_res.2<-NULL
+
+library(clustree)
+
+clustree(obj,prefix = "RNA_snn_res.")
+```
+
+### Inspect markers
+
+Look at known markers and calculate markers for the active clustering.
+
+```{r integration_5}
+FeaturePlot(obj,features = c("Plp1","Aqp4","Map2"),reduction = "umap_harmony",ncol = 3)
+
+Idents(obj)<-"RNA_snn_res.0.1"
+DotPlot(obj,features = c("Plp1","Aqp4","Map2"))
+
+Idents(obj) <- "RNA_snn_res.0.1"
+markers <- Seurat::FindAllMarkers(#it will take whatever the Active idents are so need to run the line before to make sure it is the cluster you want!
+  obj, assay = "RNA", only.pos = TRUE,
+  min.pct = 0.2, logfc.threshold = 0.25)
+#if you get a warning message about "immunogenomics/presto", please kill the command with the stop sign by the console below and run: remotes::install_github("immunogenomics/presto")
+#then retry!
+head(markers)
+qs_save(obj,file = "./results/day1/02_integrated.qs2")
+```
+
+## Part 2.5: Begin annotation
+
+Matching script: `scripts/03_saha_markers.R`. Begin here if time permits; otherwise start here on Day 2. The saved inputs and marker-based object let us resume in a fresh session.
+
+### Load packages and checkpoint
+
+```{r saha_markers_1}
+# Part 2.5: begin SAHA annotation at resolution 0.1.
+# Start here near the end of Day 1, or at the beginning of Day 2.
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(qs2)
+library(SAHA)
+library(SAHAdata)
+
+obj <- qs_read(file = "./results/day1/02_integrated.qs2")
+```
+
+### Marker-based annotation
+
+Begin at resolution 0.1 and compare cluster markers with the Allen reference.
+
+```{r saha_markers_2}
+Idents(obj) <- "RNA_snn_res.0.1"
+saha_inputs<- Seurat2SAHA(obj)
+qs_save(saha_inputs, file = "results/day2/annotation/03_inputs_res01.qs2")  
+
+# Allen ISOCTX is an annotation aid. Review label validity for each tissue.
+data("ISOCTX_Markers", package = "SAHAdata")
+data("ABC_meta", package = "SAHAdata")
+ann <- SAHA::Create_SAHA_object(
+  query = saha_inputs$markers, db = ISOCTX_Markers, data_type = "Markers"
+)
+ann <- SAHA::Initialize_Markers(ann)
+ann <- SAHA::Run_Marker_Based(ann)
+ann <- SAHA::Create_MarkerBased_Viz(ann, meta = ABC_meta)
+auto <- SAHA::AutoAnnotate(ann, data_type = "Markers")
+print(auto)
+
+print(ann@results$marker_based$dotplot_all)
+
+# Stop here if we have reached the end of Day 1.
+qs_save(ann, file = "results/day2/annotation/03_markers_res01.qs2")
+```
+

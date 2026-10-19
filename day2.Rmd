@@ -1,0 +1,378 @@
+---
+title: "Day 2: Annotation, Differential Expression, and Advanced Analyses"
+author: "Dominic J. Acri, PhD"
+output:
+  html_document:
+    toc: true
+---
+
+Open `BDMS_sc_2026_student.Rproj` first. All paths start in the course folder, wherever you put it. Run the chunks in order; knitting reruns the day's analysis. Use the Rmd or the matching scripts.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width = 10, fig.height = 6)
+```
+
+## Part 2.5: Finish annotation
+
+If we did not run `03_saha_markers.R` on Day 1, run the following optional chunks first. They are skipped when knitting; otherwise continue directly to **Resume SAHA**.
+
+### Load packages and checkpoint
+
+```{r optional_markers_1, eval=FALSE}
+# Part 2.5: begin SAHA annotation at resolution 0.1.
+# Start here near the end of Day 1, or at the beginning of Day 2.
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(qs2)
+library(SAHA)
+library(SAHAdata)
+
+obj <- qs_read(file = "./results/day1/02_integrated.qs2")
+```
+
+### Marker-based annotation
+
+Begin at resolution 0.1 and compare cluster markers with the Allen reference.
+
+```{r optional_markers_2, eval=FALSE}
+Idents(obj) <- "RNA_snn_res.0.1"
+# saha_inputs<- Seurat2SAHA(obj)#if you need to
+saha_inputs<-qs_read(file = "results/day2/annotation/03_inputs_res01.qs2")#this should have been from yesterday  
+
+# Allen ISOCTX is an annotation aid. Review label validity for each tissue.
+data("ISOCTX_Markers", package = "SAHAdata")
+data("ABC_meta", package = "SAHAdata")
+ann <- SAHA::Create_SAHA_object(
+  query = saha_inputs$markers, db = ISOCTX_Markers, data_type = "Markers"
+)
+ann <- SAHA::Initialize_Markers(ann)
+ann <- SAHA::Run_Marker_Based(ann)
+ann <- SAHA::Create_MarkerBased_Viz(ann, meta = ABC_meta)
+auto <- SAHA::AutoAnnotate(ann, data_type = "Markers")
+print(auto)
+
+print(ann@results$marker_based$dotplot_all)
+
+# Stop here if we have reached the end of Day 1.
+# qs_save(ann, file = "results/day2/annotation/03_markers_res01.qs2")
+```
+
+### Resume SAHA
+
+Matching script: `scripts/04_saha_annotate.R`. Read the saved inputs and marker-based object, add marker-free annotation, and repeat at resolution 0.5. The final object uses the resolution 0.5 labels; resolution 0.1 labels are retained in `anno_subclass_res01` and `anno_class_res01`.
+
+### Load packages and checkpoint
+
+```{r saha_finish_1}
+# Part 2.5: resume SAHA, finish resolution 0.1, then repeat at resolution 0.5.
+
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(qs2)
+library(SAHA)
+library(SAHAdata)
+
+obj <- qs_read("results/day1/02_integrated.qs2")
+saha_inputs <- qs_read("results/day2/annotation/03_inputs_res01.qs2")
+ann <- qs_read("results/day2/annotation/03_markers_res01.qs2")
+data("ABC_meta", package = "SAHAdata")
+```
+
+### Marker-free annotation
+
+Resume from the saved marker-based SAHA object and add average expression.
+
+```{r saha_finish_2}
+data("ISOCTX_AvgExp", package = "SAHAdata")
+ann <- SAHA::Create_SAHA_object(
+  query = saha_inputs$avgexp, db = ISOCTX_AvgExp, data_type = "AvgExp",existing = ann
+)
+ann=Initialize_MarkerFree(ann = ann)
+ann=Downsample(ann,custom_ds = saha_inputs$varfeat)
+ann=NormalizeDS(ann,assay_query = "RNA")
+ann=CorrelateDS(ann)
+ann=Create_MarkerFree_Viz(ann,meta = ABC_meta)
+call_SAHA_plots(ann, plot_type = "Marker-free",data_type = "AvgExp")
+
+auto=AutoAnnotate(ann,data_type = "Both")
+auto
+
+ann <- Summarize_Params(ann)  # Run the function
+ann@params$summary
+
+Generate_SAHA_Report(ann, auto = auto, output_file = "./results/day2/annotation/saha_res01.html")
+
+glimpse(obj@meta.data)
+glimpse(auto)
+glimpse(ABC_meta)
+```
+
+### Add the labels
+
+Match cluster labels back to the Seurat metadata.
+
+```{r saha_finish_3}
+# Match auto clusters to the resolution 0.1 clustering.
+obj$anno_subclass <- auto$marker_free[
+  match(as.character(obj$RNA_snn_res.0.1), auto$cluster)
+]
+
+obj$anno_class <- ABC_meta$class[
+  match(obj$anno_subclass, ABC_meta$subclass_spa)
+]
+
+DimPlot(obj,reduction = "umap_harmony",group.by = "anno_class")
+DimPlot(obj,reduction = "umap_harmony",group.by = "anno_subclass")
+
+obj$anno_subclass_res01 <- obj$anno_subclass
+obj$anno_class_res01 <- obj$anno_class
+```
+
+### Repeat at resolution 0.5
+
+Repeat the same annotation workflow with the finer clustering.
+
+```{r saha_finish_4}
+##################do all over again....
+Idents(obj) <- "RNA_snn_res.0.5"
+saha_inputs<- Seurat2SAHA(obj)
+qs_save(saha_inputs, file = "results/day2/annotation/03_inputs_res05.qs2")  
+
+# Allen ISOCTX is an annotation aid. Review label validity for each tissue.
+data("ISOCTX_Markers", package = "SAHAdata")
+data("ABC_meta", package = "SAHAdata")
+ann <- SAHA::Create_SAHA_object(
+  query = saha_inputs$markers, db = ISOCTX_Markers, data_type = "Markers"
+)
+ann <- SAHA::Initialize_Markers(ann)
+ann <- SAHA::Run_Marker_Based(ann)
+ann <- SAHA::Create_MarkerBased_Viz(ann, meta = ABC_meta)
+auto <- SAHA::AutoAnnotate(ann, data_type = "Markers")
+print(auto)
+
+print(ann@results$marker_based$dotplot_all)
+
+data("ISOCTX_AvgExp", package = "SAHAdata")
+ann <- SAHA::Create_SAHA_object(
+  query = saha_inputs$avgexp, db = ISOCTX_AvgExp, data_type = "AvgExp",existing = ann
+)
+ann=Initialize_MarkerFree(ann = ann)
+ann=Downsample(ann,custom_ds = saha_inputs$varfeat)
+ann=NormalizeDS(ann,assay_query = "RNA")
+ann=CorrelateDS(ann)
+ann=Create_MarkerFree_Viz(ann,meta = ABC_meta)
+call_SAHA_plots(ann, plot_type = "Marker-free",data_type = "AvgExp")
+
+auto=AutoAnnotate(ann,data_type = "Both")
+auto
+
+ann <- Summarize_Params(ann)  # Run the function
+ann@params$summary
+
+Generate_SAHA_Report(ann, auto = auto, output_file = "./results/day2/annotation/saha_res05.html")
+
+glimpse(obj@meta.data)
+glimpse(auto)
+glimpse(ABC_meta)
+
+# Match auto clusters to the resolution 0.5 clustering.
+obj$anno_subclass <- auto$marker_free[
+  match(as.character(obj$RNA_snn_res.0.5), auto$cluster)
+]
+
+obj$anno_class <- ABC_meta$class[
+  match(obj$anno_subclass, ABC_meta$subclass_spa)
+]
+
+DimPlot(obj,reduction = "umap_harmony",group.by = "anno_class")
+DimPlot(obj,reduction = "umap_harmony",group.by = "anno_subclass")
+
+qs_save(obj,"./results/day2/annotation/04_annotated.qs2")
+```
+
+## Part 3: Differential expression
+
+Matching script: `scripts/05_de.R`. Read `04_annotated.qs2`, subset microglia, and compare the cell-level and sample-level approaches. These unmatched samples are for the teaching comparison; study and condition are confounded.
+
+### Load packages and checkpoint
+
+```{r de_1}
+# Part 3: compare MAST cell-level DE with edgeR sample-level pseudobulk.
+# These five unmatched samples cannot identify a 5xFAD disease effect.
+# Run: Rscript scripts/05_de.R
+
+library(Seurat)
+library(MAST)
+library(edgeR)
+library(dplyr)
+library(ggplot2)
+library(qs2)
+library(patchwork)
+
+project_dir <- "."
+result_dir <- file.path(project_dir, "results/day2/de")
+plot_dir <- file.path(project_dir, "plots/day2")
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+obj<-qs_read("./results/day2/annotation/04_annotated.qs2")
+DefaultAssay(obj) <- "RNA"
+```
+
+### Subset microglia
+
+Use the completed annotation and inspect the samples contributing microglia.
+
+```{r de_2}
+micro_cells <- rownames(obj@meta.data)[!is.na(obj$anno_subclass) & obj$anno_subclass == "334 Microglia NN"]
+
+micro <- base::subset(obj, cells = micro_cells)
+
+sample_info <- micro@meta.data |>
+  dplyr::count(sample_id, study, condition, name = "n_microglia")
+
+print(sample_info)
+```
+
+### Cell-level MAST
+
+Compare 5xFAD with reference cells using the supplied cell-level model.
+
+```{r de_3}
+# MAST fits cell-level tests: cells from a sample are not independent replicates.
+# The resulting p-values are not valid evidence of a disease association here.
+Idents(micro) <- "condition"
+mast_results <- Seurat::FindMarkers(
+  object = micro, ident.1 = "5xFAD", ident.2 = "reference",
+  assay = "RNA", test.use = "MAST", latent.vars = c("nCount_RNA", "percent.mt"),
+  logfc.threshold = 0, min.pct = 0.1
+)
+mast_results <- tibble::rownames_to_column(as.data.frame(mast_results), var = "gene")
+# utils::write.csv(mast_results,
+#                  file.path(result_dir, "teaching_only_MAST_microglia.csv"),
+#                  row.names = FALSE)
+```
+
+### Sample-level pseudobulk
+
+Sum raw counts per sample and run the supplied edgeR model.
+
+```{r de_4}
+# Aggregate raw counts per biological sample; never aggregate per condition only.
+# The s prefix avoids Seurat renaming a group that starts with a digit.
+micro$sample_key <- paste0("s", match(micro$sample_id, sample_info$sample_id))
+sample_info$sample_key <- paste0("s", seq_len(nrow(sample_info)))
+pbulk_counts <- Seurat::AggregateExpression(
+  micro, assays = "RNA", group.by = "sample_key", return.seurat = FALSE
+)[["RNA"]]
+pbulk_info <- sample_info[match(colnames(pbulk_counts), sample_info$sample_key), ]
+
+group <- factor(pbulk_info$condition, levels = c("reference", "5xFAD"))
+design <- stats::model.matrix(~ group)
+pbulk_info <- as.data.frame(pbulk_info)
+rownames(pbulk_info) <- pbulk_info$sample_key
+y <- edgeR::DGEList(counts = pbulk_counts, samples = as.data.frame(pbulk_info))
+keep <- edgeR::filterByExpr(y, design = design)
+summary(keep)
+y <- y[keep, , keep.lib.sizes = FALSE]
+y <- edgeR::calcNormFactors(y)
+y <- edgeR::estimateDisp(y, design)
+fit <- edgeR::glmQLFit(y, design)
+qlf <- edgeR::glmQLFTest(fit, coef = "group5xFAD")
+pbulk_results <- edgeR::topTags(qlf, n = Inf)$table |>
+  tibble::rownames_to_column(var = "gene")
+
+# utils::write.csv(pbulk_results,
+#                  file.path(result_dir, "teaching_only_edgeR_pseudobulk_microglia.csv"),
+#                  row.names = FALSE)
+
+
+# Save both methods so the comparison can start in a fresh R session.
+qs_save(list(mast = mast_results, pseudobulk = pbulk_results,
+             counts = pbulk_counts, samples = pbulk_info),
+        file.path(result_dir, "05_de.qs2"))
+```
+
+## Part 3: Compare the methods
+
+Matching script: `scripts/06_compare.R`. Read `05_de.qs2` and reproduce the comparison plots.
+
+### Load packages and checkpoint
+
+```{r comparison_1}
+# Part 3: compare cell-level MAST with sample-level pseudobulk results.
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(qs2)
+
+result_dir <- "results/day2/de"
+plot_dir <- "plots/day2"
+de <- qs_read(file.path(result_dir, "05_de.qs2"))
+mast_results <- de$mast
+pbulk_results <- de$pseudobulk
+```
+
+### Compare the methods
+
+Resume from the saved DE results and reproduce the slide comparisons.
+
+```{r comparison_2}
+######################################
+# Resume Here
+######################################
+comparison <- dplyr::full_join(
+  mast_results %>%
+    dplyr::select(gene, mast_log2FC = avg_log2FC, mast_p = p_val_adj),
+  pbulk_results %>%
+    dplyr::select(gene, pbulk_log2FC = logFC, pbulk_FDR = FDR),
+  by = "gene"
+)
+# utils::write.csv(comparison,
+#                  file.path(result_dir, "teaching_only_method_comparison.csv"),
+#                  row.names = FALSE)
+
+
+volc1<-ggplot(comparison,aes(x = mast_log2FC,y = -log10(mast_p)))+geom_point()+theme_linedraw()
+volc2<-ggplot(comparison,aes(x = pbulk_log2FC,y = -log10(pbulk_FDR)))+geom_point()+theme_linedraw()
+volc1|volc2
+
+plot(
+  eulerr::euler(list(mast = mast_results$gene, pbulk = pbulk_results$gene)),
+  quantities = TRUE
+)
+
+figure <- ggplot2::ggplot(comparison,
+                          ggplot2::aes(x = mast_log2FC, y = pbulk_log2FC)) +
+  ggplot2::geom_hline(yintercept = 0, color = "grey75") +
+  ggplot2::geom_vline(xintercept = 0, color = "grey75") +
+  ggplot2::geom_point(alpha = 0.35, size = 0.8) +
+  ggplot2::labs(x = "MAST cell-level log2 fold change",
+                y = "edgeR sample-level log2 fold change") +
+  ggplot2::theme_classic()
+# grDevices::png(file.path(plot_dir, "03_mast_vs_pseudobulk.png"),
+#                width = 7, height = 6, units = "in", res = 160)
+print(figure)
+
+figure2 <- ggplot2::ggplot(comparison,
+                          ggplot2::aes(x = -log10(mast_p), y = -log10(pbulk_FDR))) +
+  ggplot2::geom_hline(yintercept = 0, color = "grey75") +
+  ggplot2::geom_vline(xintercept = 0, color = "grey75") +
+  ggplot2::geom_point(alpha = 0.35, size = 0.8) +
+  ggplot2::labs(x = "MAST cell-level -log10(p)",
+               y = "edgeR sample-level -log10(FDR)") +
+  ggplot2::theme_classic()
+# grDevices::png(file.path(plot_dir, "03_mast_vs_pseudobulk.png"),
+#                width = 7, height = 6, units = "in", res = 160)
+print(figure2)
+# grDevices::dev.off()
+
+message("Finished teaching-only comparison; do not interpret p-values as disease effects.")
+```
+
+## Part 4: Advanced analyses
+
+Instructor-led discussion accompanying slide 90.
