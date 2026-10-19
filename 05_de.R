@@ -35,7 +35,7 @@ Idents(micro) <- "condition"
 mast_results <- Seurat::FindMarkers(
   object = micro, ident.1 = "5xFAD", ident.2 = "reference",
   assay = "RNA", test.use = "MAST", latent.vars = c("nCount_RNA", "percent.mt"),
-  logfc.threshold = 0, min.pct = 0.1
+  logfc.threshold = 0.25, min.pct = 0.2# logfc.threshold = 0, min.pct = 0.1 #to speed up the demonstration inc logfc and min.pct
 )
 mast_results <- tibble::rownames_to_column(as.data.frame(mast_results), var = "gene")
 # utils::write.csv(mast_results,
